@@ -8,91 +8,106 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build for Z96A RK3568
+  build-z96a:
+    name: Build sc8886s_charger.ko for Z96A
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        kernel:
-          - { name: legacy-5.10, branch: rockchip-rk3568-z96a, config: config-z96a-legacy.config }
-          - { name: edge-6.1,     branch: rockchip-rk3568-z96a, config: config-z96a-edge.config }
-
-    container:
-      image: ubuntu:22.04
-      options: --privileged
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install cross compiler + tools
         run: |
-          apt-get update
-          apt-get install -y git bc bison flex libssl-dev libelf-dev \
-                              gcc-aarch64-linux-gnu \
-                              device-tree-compiler
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            bison flex bc libssl-dev libncurses-dev \
+            device-tree-compiler kmod
 
-      - name: Clone linux-rockchip
-        run: |
-          cd /usr/src
-          git clone --depth=1 https://github.com/armbian/linux-rockchip.git
-          cd linux-rockchip
-          git fetch --depth=1 origin ${{ matrix.kernel.branch }}:${{ matrix.kernel.branch }}
-          git checkout ${{ matrix.kernel.branch }} || git checkout rockchip-rk3568-z96a
+      - name: Checkout kemp233/linux-rockchip (rk-6.1-rkr5.1 branch)
+        uses: actions/checkout@v4
+        with:
+          repository: kemp233/linux-rockchip
+          ref: rk-6.1-rkr5.1
+          path: linux-src
 
-      - name: Apply z96a kernel config
+      - name: Copy sc8886s_charger.c into kernel tree
         run: |
-          cd /usr/src/linux-rockchip
-          # Copy config from armbian build repo
-          curl -sL https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk3568-z96a-${{ matrix.kernel.name == 'legacy-5.10' && 'legacy' || 'edge' }}.config -o .config || \
-          curl -sL https://raw.githubusercontent.com/armbian/build/main/config/kernel/${{ matrix.kernel.config }} -o .config
+          cp $GITHUB_WORKSPACE/sc8886s_charger.c linux-src/drivers/power/supply/
+          ls -la linux-src/drivers/power/supply/sc8886s_charger.c
+
+      - name: Add Kconfig + Makefile entry for SC8886S
+        run: |
+          cd linux-src
+
+          # Kconfig: add at end of CHARGER section
+          if ! grep -q "sc8886s_charger" drivers/power/supply/Kconfig; then
+            cat >> drivers/power/supply/Kconfig <<'KEOF'
+
+config CHARGER_SC8886S
+	tristate "SouthChip SC8886S battery charger"
+	depends on I2C
+	help
+	  Say Y to enable support for the SouthChip SC8886S battery
+	  charger IC, used in Z96A RK3568 laptop boards.
+
+	  This driver replaces the bq25700_charger driver on i2c-0/0x6b.
+KEOF
+            echo "Added Kconfig entry"
+          fi
+
+          # Makefile: add to CHARGER section
+          if ! grep -q "sc8886s_charger" drivers/power/supply/Makefile; then
+            echo "obj-\$(CONFIG_CHARGER_SC8886S) += sc8886s_charger.o" >> drivers/power/supply/Makefile
+            echo "Added Makefile entry"
+          fi
+
+      - name: Use Z96A edge kernel config
+        run: |
+          cd linux-src
+          # Use z96a-edge config (matches 6.1.115-legacy-rockchip-rk3568-z96a)
+          if [ -f "$GITHUB_WORKSPACE/../../kemp233/armbian-build-sunniwell-Z96a/config/kernel/linux-rockchip-rk3568-z96a-edge.config" ]; then
+            cp "$GITHUB_WORKSPACE/../../kemp233/armbian-build-sunniwell-Z96a/config/kernel/linux-rockchip-rk3568-z96a-edge.config" .config
+          else
+            # Download from armbian-build
+            curl -fsSL https://raw.githubusercontent.com/kemp233/armbian-build-sunniwell-Z96a/main/config/kernel/linux-rockchip-rk3568-z96a-edge.config -o .config
+          fi
           ls -la .config
-          # Verify it's z96a config
-          grep -E "CONFIG_LOCALVERSION|rockchip" .config | head -3
-
-      - name: olddefconfig
-        run: |
-          cd /usr/src/linux-rockchip
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          make olddefconfig 2>&1 | tail -5
+          head -3 .config
+          # Enable sc8886s in config
+          ./scripts/config --enable CHARGER_SC8886S
+          ./scripts/config --module CHARGER_SC8886S 2>/dev/null || true
+          echo "CHARGER_SC8886S=m" >> .config
+          echo "I2C=y" >> .config
+          echo "REGMAP_I2C=y" >> .config
+          echo "POWER_SUPPLY=y" >> .config
+          echo "RTC_CLASS=y" >> .config
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -E "SC8886S|CHARGER_" .config | head -5
 
       - name: Build sc8886s_charger.ko
         run: |
-          cd /usr/src/linux-rockchip
+          cd linux-src
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make modules_prepare 2>&1 | tail -3
-          make M=$GITHUB_WORKSPACE modules 2>&1 | tail -20
+          make -j$(nproc) M=drivers/power/supply modules
+          # 验证 .ko
+          ls -la drivers/power/supply/sc8886s_charger.ko
+          aarch64-linux-gnu-objdump -h drivers/power/supply/sc8886s_charger.ko | head -3
 
-      - name: Verify .ko built
-        run: |
-          ls -la $GITHUB_WORKSPACE/sc8886s_charger.ko
-          file $GITHUB_WORKSPACE/sc8886s_charger.ko
-          aarch64-linux-gnu-objdump -h $GITHUB_WORKSPACE/sc8886s_charger.ko | grep -E "sc8886s|version" | head -10
-
-      - name: Check kernel module dependencies
-        run: |
-          cd /usr/src/linux-rockchip
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          make modules 2>&1 | tail -5
-          # 找 modpost 用的 Module.symvers
-          ls -la Module.symvers
-          cp Module.symvers $GITHUB_WORKSPACE/
-
-      - name: Upload artifact
+      - name: Upload .ko artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sc8886s_charger-${{ matrix.kernel.name }}.ko
-          path: sc8886s_charger.ko
+          name: sc8886s_charger-z96a.ko
+          path: linux-src/drivers/power/supply/sc8886s_charger.ko
           if-no-files-found: error
+          retention-days: 30
 
-      - name: Show build summary
+      - name: Show summary
         run: |
           echo "=== Build Summary ==="
-          echo "Kernel: ${{ matrix.kernel.name }}"
-          echo "Config: ${{ matrix.kernel.config }}"
-          ls -la sc8886s_charger.ko
+          ls -la linux-src/drivers/power/supply/sc8886s_charger.ko
+          echo "=== Module info ==="
+          aarch64-linux-gnu-readelf -h linux-src/drivers/power/supply/sc8886s_charger.ko
           echo "=== Symbols ==="
-          aarch64-linux-gnu-nm sc8886s_charger.ko | grep -E "T sc8886s" | head -10
+          aarch64-linux-gnu-nm linux-src/drivers/power/supply/sc8886s_charger.ko | grep -E "T sc8886s" | head -10
