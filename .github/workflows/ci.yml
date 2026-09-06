@@ -1,0 +1,98 @@
+name: SC8886S Driver CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for Z96A RK3568
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - { name: legacy-5.10, branch: rockchip-rk3568-z96a, config: config-z96a-legacy.config }
+          - { name: edge-6.1,     branch: rockchip-rk3568-z96a, config: config-z96a-edge.config }
+
+    container:
+      image: ubuntu:22.04
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y git bc bison flex libssl-dev libelf-dev \
+                              gcc-aarch64-linux-gnu \
+                              device-tree-compiler
+
+      - name: Clone linux-rockchip
+        run: |
+          cd /usr/src
+          git clone --depth=1 https://github.com/armbian/linux-rockchip.git
+          cd linux-rockchip
+          git fetch --depth=1 origin ${{ matrix.kernel.branch }}:${{ matrix.kernel.branch }}
+          git checkout ${{ matrix.kernel.branch }} || git checkout rockchip-rk3568-z96a
+
+      - name: Apply z96a kernel config
+        run: |
+          cd /usr/src/linux-rockchip
+          # Copy config from armbian build repo
+          curl -sL https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk3568-z96a-${{ matrix.kernel.name == 'legacy-5.10' && 'legacy' || 'edge' }}.config -o .config || \
+          curl -sL https://raw.githubusercontent.com/armbian/build/main/config/kernel/${{ matrix.kernel.config }} -o .config
+          ls -la .config
+          # Verify it's z96a config
+          grep -E "CONFIG_LOCALVERSION|rockchip" .config | head -3
+
+      - name: olddefconfig
+        run: |
+          cd /usr/src/linux-rockchip
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make olddefconfig 2>&1 | tail -5
+
+      - name: Build sc8886s_charger.ko
+        run: |
+          cd /usr/src/linux-rockchip
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make modules_prepare 2>&1 | tail -3
+          make M=$GITHUB_WORKSPACE modules 2>&1 | tail -20
+
+      - name: Verify .ko built
+        run: |
+          ls -la $GITHUB_WORKSPACE/sc8886s_charger.ko
+          file $GITHUB_WORKSPACE/sc8886s_charger.ko
+          aarch64-linux-gnu-objdump -h $GITHUB_WORKSPACE/sc8886s_charger.ko | grep -E "sc8886s|version" | head -10
+
+      - name: Check kernel module dependencies
+        run: |
+          cd /usr/src/linux-rockchip
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make modules 2>&1 | tail -5
+          # 找 modpost 用的 Module.symvers
+          ls -la Module.symvers
+          cp Module.symvers $GITHUB_WORKSPACE/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sc8886s_charger-${{ matrix.kernel.name }}.ko
+          path: sc8886s_charger.ko
+          if-no-files-found: error
+
+      - name: Show build summary
+        run: |
+          echo "=== Build Summary ==="
+          echo "Kernel: ${{ matrix.kernel.name }}"
+          echo "Config: ${{ matrix.kernel.config }}"
+          ls -la sc8886s_charger.ko
+          echo "=== Symbols ==="
+          aarch64-linux-gnu-nm sc8886s_charger.ko | grep -E "T sc8886s" | head -10
