@@ -38,7 +38,7 @@
 #define SC8886S_REG_ADC_VSYS          0x2D
 #define SC8886S_REG_CHARGE_OPT_1_L    0x30
 #define SC8886S_REG_PROCHOT_OPT_0_L   0x36
-#define SC8886S_REG_ADC_OPT_H         0x3B
+#define SC8886S_REG_ADC_OPT_H         0x3A
 
 /* ==================== Power Supply Properties ==================== */
 struct sc8886s_chip {
@@ -254,7 +254,7 @@ static void sc8886s_monitor_work(struct work_struct *work)
 }
 
 /* ==================== Probe ==================== */
-static int sc8886s_probe(struct i2c_client *client)
+static int sc8886s_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
     struct sc8886s_chip *chip;
     int ret;
@@ -271,6 +271,21 @@ static int sc8886s_probe(struct i2c_client *client)
         dev_err(&client->dev, "regmap init failed\n");
         return PTR_ERR(chip->regmap);
     }
+
+    /* Wake up SC8886 from LWPWR sleep */
+    /* REG_RST: write 1 to bit 8 of reg 0x00 (16-bit write) */
+    sc8886s_write_reg(chip, 0x00, 0x01);
+    sc8886s_write_reg(chip, 0x01, 0x01);  /* REG_RST bit 8 */
+    msleep(500);
+
+    /* WD_RST: write 1 to bit 9 of reg 0x00 (16-bit write) */
+    sc8886s_write_reg(chip, 0x00, 0x00);
+    sc8886s_write_reg(chip, 0x01, 0x02);  /* WD_RST bit 9 */
+    msleep(200);
+
+    /* Force EN_HIZ=0, CHRG_INHIBIT=0, WDTWR_ADJ=3 */
+    sc8886s_write_reg(chip, 0x00, 0x30);
+    msleep(200);
 
     /* Read device ID to confirm */
     ret = sc8886s_read_reg(chip, 0x2F, &val);
@@ -304,9 +319,9 @@ static int sc8886s_probe(struct i2c_client *client)
     /* Step 6: VSYSMIN=6.0V */
     sc8886s_set_vsysmin(chip, 6000);
     /* Step 7: ICHG=1024mA */
-    sc8886s_set_charge_current(chip, 1024);
+    sc8886s_set_charge_current(chip, 2048);  /* 2A charging */
     /* Step 8: VCHG=8.0V (instead of 8.4V default) */
-    sc8886s_set_charge_voltage(chip, 8000);
+    sc8886s_set_charge_voltage(chip, 8400);  /* 2S Li-ion full */
     /* Step 9-10: PROCHOT disable BATOCP + BATOVP */
     {
         struct field_info batocp = { SC8886S_REG_PROCHOT_OPT_0_L, 3, 1 };
@@ -332,11 +347,11 @@ static int sc8886s_probe(struct i2c_client *client)
     return 0;
 }
 
-static int sc8886s_remove(struct i2c_client *client, const struct i2c_device_id *id)
+static void sc8886s_remove(struct i2c_client *client)
 {
     struct sc8886s_chip *chip = i2c_get_clientdata(client);
     cancel_delayed_work_sync(&chip->monitor_work);
-    return 0;
+    /* 6.x remove returns void */
 }
 
 static const struct of_device_id sc8886s_of_match[] = {

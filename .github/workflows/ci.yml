@@ -2,9 +2,9 @@ name: SC8886S Driver CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
             bison flex bc libssl-dev libncurses-dev \
             device-tree-compiler kmod
 
-      - name: Checkout kemp233/linux-rockchip (rk-6.1-rkr5.1 branch)
+      - name: Checkout kemp233/linux-rockchip (rk-6.1-rkr5.1 - matches z96a board)
         uses: actions/checkout@v4
         with:
           repository: kemp233/linux-rockchip
@@ -36,64 +36,59 @@ jobs:
           cp $GITHUB_WORKSPACE/sc8886s_charger.c linux-src/drivers/power/supply/
           ls -la linux-src/drivers/power/supply/sc8886s_charger.c
 
-      - name: Add Kconfig + Makefile entry for SC8886S
+      - name: Add Kconfig entry for SC8886S
         run: |
           cd linux-src
-
-          # Kconfig: add at end of CHARGER section
           if ! grep -q "sc8886s_charger" drivers/power/supply/Kconfig; then
-            cat >> drivers/power/supply/Kconfig <<'KEOF'
-
-config CHARGER_SC8886S
-	tristate "SouthChip SC8886S battery charger"
-	depends on I2C
-	help
-	  Say Y to enable support for the SouthChip SC8886S battery
-	  charger IC, used in Z96A RK3568 laptop boards.
-
-	  This driver replaces the bq25700_charger driver on i2c-0/0x6b.
-KEOF
+            printf '\nconfig CHARGER_SC8886S\n\ttristate "SouthChip SC8886S battery charger"\n\tdepends on I2C\n\thelp\n\t  Say Y to enable support for the SouthChip SC8886S battery\n\t  charger IC, used in Z96A RK3568 laptop boards.\n\n\t  This driver replaces the bq25700_charger driver on i2c-0/0x6b.\n' >> drivers/power/supply/Kconfig
             echo "Added Kconfig entry"
           fi
 
-          # Makefile: add to CHARGER section
+      - name: Add Makefile entry for SC8886S
+        run: |
+          cd linux-src
           if ! grep -q "sc8886s_charger" drivers/power/supply/Makefile; then
-            echo "obj-\$(CONFIG_CHARGER_SC8886S) += sc8886s_charger.o" >> drivers/power/supply/Makefile
+            echo 'obj-$(CONFIG_CHARGER_SC8886S) += sc8886s_charger.o' >> drivers/power/supply/Makefile
             echo "Added Makefile entry"
           fi
 
-      - name: Use Z96A edge kernel config
+      - name: Use Z96A kernel config (force CONFIG_CHARGER_SC8886S=m via sed)
         run: |
           cd linux-src
-          # Use z96a-edge config (matches 6.1.115-legacy-rockchip-rk3568-z96a)
-          if [ -f "$GITHUB_WORKSPACE/../../kemp233/armbian-build-sunniwell-Z96a/config/kernel/linux-rockchip-rk3568-z96a-edge.config" ]; then
-            cp "$GITHUB_WORKSPACE/../../kemp233/armbian-build-sunniwell-Z96a/config/kernel/linux-rockchip-rk3568-z96a-edge.config" .config
-          else
-            # Download from armbian-build
-            curl -fsSL https://raw.githubusercontent.com/kemp233/armbian-build-sunniwell-Z96a/main/config/kernel/linux-rockchip-rk3568-z96a-edge.config -o .config
-          fi
+          curl -fsSL https://raw.githubusercontent.com/kemp233/armbian-build-sunniwell-Z96a/main/config/kernel/linux-rockchip-rk3568-z96a-legacy.config -o .config
           ls -la .config
           head -3 .config
-          # Enable sc8886s in config
-          ./scripts/config --enable CHARGER_SC8886S
-          ./scripts/config --module CHARGER_SC8886S 2>/dev/null || true
-          echo "CHARGER_SC8886S=m" >> .config
-          echo "I2C=y" >> .config
-          echo "REGMAP_I2C=y" >> .config
-          echo "POWER_SUPPLY=y" >> .config
-          echo "RTC_CLASS=y" >> .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          grep -E "SC8886S|CHARGER_" .config | head -5
+          # Use sed -i (handles both '=m' and '# is not set' forms)
+          for opt in CONFIG_CHARGER_SC8886S=m \
+                     CONFIG_CHARGER_BQ25700=m \
+                     CONFIG_BATTERY_RK817=y; do
+            key=$(echo $opt | cut -d= -f1)
+            val=$(echo $opt | cut -d= -f2)
+            sed -i -E "s|^#?${key}=.*|${key}=${val}|" .config
+            echo "  Set $opt"
+          done
+          # Verify
+          echo "=== SC8886S in .config ==="
+          grep "SC8886S" .config | head -3
+          echo "=== BQ25700 in .config ==="
+          grep "BQ25700" .config | head -3
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make olddefconfig
+          echo "=== After olddefconfig ==="
+          grep "SC8886S" .config | head -3
 
       - name: Build sc8886s_charger.ko
         run: |
           cd linux-src
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make -j$(nproc) M=drivers/power/supply modules
-          # 验证 .ko
+          make -j$(nproc) modules_prepare
+          make -j$(nproc) M=drivers/power/supply sc8886s_charger.ko
           ls -la drivers/power/supply/sc8886s_charger.ko
-          aarch64-linux-gnu-objdump -h drivers/power/supply/sc8886s_charger.ko | head -3
+          file drivers/power/supply/sc8886s_charger.ko
+          echo "=== version magic ==="
+          aarch64-linux-gnu-modinfo drivers/power/supply/sc8886s_charger.ko 2>/dev/null | grep vermagic
 
       - name: Upload .ko artifact
         uses: actions/upload-artifact@v4
@@ -103,11 +98,10 @@ KEOF
           if-no-files-found: error
           retention-days: 30
 
-      - name: Show summary
+      - name: Show build summary
         run: |
           echo "=== Build Summary ==="
           ls -la linux-src/drivers/power/supply/sc8886s_charger.ko
-          echo "=== Module info ==="
-          aarch64-linux-gnu-readelf -h linux-src/drivers/power/supply/sc8886s_charger.ko
+          aarch64-linux-gnu-readelf -h linux-src/drivers/power/supply/sc8886s_charger.ko 2>/dev/null | head -10
           echo "=== Symbols ==="
-          aarch64-linux-gnu-nm linux-src/drivers/power/supply/sc8886s_charger.ko | grep -E "T sc8886s" | head -10
+          aarch64-linux-gnu-nm linux-src/drivers/power/supply/sc8886s_charger.ko 2>/dev/null | grep -E "T sc8886s" | head -10
