@@ -392,6 +392,13 @@ static const struct of_device_id sc8886s_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, sc8886s_of_match);
 
+/* legacy (new_device) instantiation requires an i2c_device_id table */
+static const struct i2c_device_id sc8886s_id[] = {
+    { "sc8886s_charger", 0 },
+    { }
+};
+MODULE_DEVICE_TABLE(i2c, sc8886s_id);
+
 static struct i2c_driver sc8886s_driver = {
     .driver = {
         .name = "sc8886s_charger",
@@ -399,6 +406,7 @@ static struct i2c_driver sc8886s_driver = {
     },
     .probe = sc8886s_probe,
     .remove = sc8886s_remove,
+    .id_table = sc8886s_id,
 };
 module_i2c_driver(sc8886s_driver);
 
