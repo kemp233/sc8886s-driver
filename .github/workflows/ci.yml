@@ -52,10 +52,11 @@ jobs:
             echo "Added Makefile entry"
           fi
 
-      - name: Use Z96A kernel config (force CONFIG_CHARGER_SC8886S=m via sed)
+      - name: Use the exact deployed kernel config (ABI must match board)
         run: |
           cd linux-src
-          curl -fsSL https://raw.githubusercontent.com/kemp233/armbian-build-sunniwell-Z96a/main/config/kernel/linux-rockchip-rk3568-z96a-legacy.config -o .config
+          # this .config is the actual running kernel's config on the board
+          curl -fsSL https://raw.githubusercontent.com/kemp233/linux-rockchip/rk-6.1-rkr5.1/z96a_deployed_kernel.config -o .config
           ls -la .config
           head -3 .config
           # Use scripts/config: handles '=m', '=y' and '# is not set' forms
