@@ -184,6 +184,28 @@ static int sc8886s_read_adc_ichg(struct sc8886s_chip *chip)
     return raw * 64; /* mA */
 }
 
+/* ==================== 2S Li-ion voltage -> SOC ==================== */
+static int sc8886s_vbat_to_capacity(int vbat_mv)
+{
+    /* per-cell open-circuit voltage approximation, values in mV */
+    static const int table[][2] = {
+        {6400, 0}, {6600, 2}, {6800, 5}, {7000, 10}, {7150, 17},
+        {7300, 28}, {7450, 42}, {7600, 55}, {7750, 66}, {7900, 75},
+        {8000, 82}, {8100, 88}, {8200, 93}, {8300, 97}, {8400, 100},
+    };
+    int n = sizeof(table) / sizeof(table[0]);
+    int i;
+
+    if (vbat_mv <= table[0][0])
+        return 0;
+    for (i = 1; i < n; i++) {
+        if (vbat_mv <= table[i][0])
+            return table[i-1][1] + (vbat_mv - table[i-1][0]) *
+                   (table[i][1] - table[i-1][1]) / (table[i][0] - table[i-1][0]);
+    }
+    return 100;
+}
+
 /* ==================== Power Supply ==================== */
 static int sc8886s_psy_get_property(struct power_supply *psy,
                                     enum power_supply_property psp,
@@ -209,6 +231,14 @@ static int sc8886s_psy_get_property(struct power_supply *psy,
     case POWER_SUPPLY_PROP_CURRENT_NOW:
         val->intval = chip->ichg_ma * 1000; /* μA */
         break;
+    case POWER_SUPPLY_PROP_CAPACITY: {
+        /* real SOC from SC8886 internal ADC (bypasses broken SARADC) */
+        int mv = sc8886s_read_adc_vbat(chip);
+        if (mv < 0)
+            return mv;
+        val->intval = sc8886s_vbat_to_capacity(mv);
+        break;
+    }
     case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
         val->intval = 8400 * 1000; /* 8.4V max */
         break;
@@ -226,6 +256,7 @@ static enum power_supply_property sc8886s_psy_props[] = {
     POWER_SUPPLY_PROP_ONLINE,
     POWER_SUPPLY_PROP_VOLTAGE_NOW,
     POWER_SUPPLY_PROP_CURRENT_NOW,
+    POWER_SUPPLY_PROP_CAPACITY,
     POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
     POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 };
