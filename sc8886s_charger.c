@@ -365,7 +365,11 @@ static int sc8886s_probe(struct i2c_client *client, const struct i2c_device_id *
 
     /* Register power supply */
     chip->psy_desc = sc8886s_psy_desc;
-    chip->psy = devm_power_supply_register(&client->dev, &chip->psy_desc, NULL);
+    {
+        /* without drv_data, get_property sees chip == NULL -> NULL deref */
+        struct power_supply_config psy_cfg = { .drv_data = chip, };
+        chip->psy = devm_power_supply_register(&client->dev, &chip->psy_desc, &psy_cfg);
+    }
     if (IS_ERR(chip->psy)) {
         dev_err(&client->dev, "Failed to register power supply\n");
         return PTR_ERR(chip->psy);
