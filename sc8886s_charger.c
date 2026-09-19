@@ -314,8 +314,14 @@ static int sc8886s_probe(struct i2c_client *client, const struct i2c_device_id *
     sc8886s_write_reg(chip, 0x01, 0x02);  /* WD_RST bit 9 */
     msleep(200);
 
-    /* Force EN_HIZ=0, CHRG_INHIBIT=0, WDTWR_ADJ=3 */
-    sc8886s_write_reg(chip, 0x00, 0x30);
+    /* Known-good CHARGE_OPTION0 (verified by board bring-up 2026-09-19):
+     * L = 0x0E: EN_IDPM|EN_LDO|IBAT_GAIN set, CHRG_INHIBIT=0
+     *   (0x30/0x00 leaves EN_IDPM=0/EN_LDO=0 -> zero input current!)
+     * H = 0x07: EN_LWPWR=0 (performance), WDTWR_ADJ=0 (watchdog OFF),
+     *           PWM_FREQ/EN_OOA/LOW_PTM_RIPPLE defaults kept
+     *   (WDTWR_ADJ=3 is WDT_175S per upstream enum, NOT disable!) */
+    sc8886s_write_reg(chip, 0x00, 0x0E);
+    sc8886s_write_reg(chip, 0x01, 0x07);
     msleep(200);
 
     /* Read device ID to confirm */
@@ -326,12 +332,11 @@ static int sc8886s_probe(struct i2c_client *client, const struct i2c_device_id *
     }
     dev_info(&client->dev, "SC8886S device ID: 0x%02x (expected 0x66)\n", val);
 
-    /* Init: 10-step blind charge config */
-    /* Step 1: WDTWR_ADJ=3 (disable watchdog) */
-    /* 0x01 bit 5-6 = 11 = 0x60 */
+    /* Init: blind charge config */
+    /* Step 1: WDTWR_ADJ=0 (WDT_DISABLE — enum: 0=off, 3=175s) */
     {
         struct field_info wdt = { SC8886S_REG_CHARGE_OPTION0_H, 5, 2 };
-        sc8886s_field_write(chip, wdt, 3);
+        sc8886s_field_write(chip, wdt, 0);
     }
     /* Step 2: CHRG_INHIBIT=0 (allow charge) */
     {
