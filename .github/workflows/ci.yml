@@ -58,15 +58,12 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/kemp233/armbian-build-sunniwell-Z96a/main/config/kernel/linux-rockchip-rk3568-z96a-legacy.config -o .config
           ls -la .config
           head -3 .config
-          # Use sed -i (handles both '=m' and '# is not set' forms)
-          for opt in CONFIG_CHARGER_SC8886S=m \
-                     CONFIG_CHARGER_BQ25700=m \
-                     CONFIG_BATTERY_RK817=y; do
-            key=$(echo $opt | cut -d= -f1)
-            val=$(echo $opt | cut -d= -f2)
-            sed -i -E "s|^#?${key}=.*|${key}=${val}|" .config
-            echo "  Set $opt"
+          # Use scripts/config: handles '=m', '=y' and '# is not set' forms
+          for opt in CONFIG_CHARGER_SC8886S CONFIG_CHARGER_BQ25700; do
+            ./scripts/config --file .config --module "$opt"
+            echo "  Set $opt=m"
           done
+          ./scripts/config --file .config --enable CONFIG_BATTERY_RK817
           # Verify
           echo "=== SC8886S in .config ==="
           grep "SC8886S" .config | head -3
@@ -77,6 +74,12 @@ jobs:
           make olddefconfig
           echo "=== After olddefconfig ==="
           grep "SC8886S" .config | head -3
+          # Hard gate: must be a module after olddefconfig, or modpost will
+          # fail with "missing MODULE_LICENSE" (builtin .o has no license)
+          grep -q "^CONFIG_CHARGER_SC8886S=m$" .config || {
+            echo "FAIL: CONFIG_CHARGER_SC8886S is not =m after olddefconfig"
+            exit 1
+          }
 
       - name: Build sc8886s_charger.ko
         run: |
