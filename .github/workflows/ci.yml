@@ -87,7 +87,9 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           make -j$(nproc) modules_prepare
-          make -j$(nproc) M=drivers/power/supply sc8886s_charger.ko
+          # KBUILD_MODPOST_WARN: board kernel has no MODVERSIONS, undefined
+          # kernel symbols are resolved at insmod time, not build time
+          make -j$(nproc) M=drivers/power/supply KBUILD_MODPOST_WARN=1 sc8886s_charger.ko
           ls -la drivers/power/supply/sc8886s_charger.ko
           file drivers/power/supply/sc8886s_charger.ko
           echo "=== version magic ==="
