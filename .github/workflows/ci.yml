@@ -93,7 +93,7 @@ jobs:
           ls -la drivers/power/supply/sc8886s_charger.ko
           file drivers/power/supply/sc8886s_charger.ko
           echo "=== version magic ==="
-          aarch64-linux-gnu-modinfo drivers/power/supply/sc8886s_charger.ko 2>/dev/null | grep vermagic
+          modinfo drivers/power/supply/sc8886s_charger.ko 2>/dev/null | grep vermagic
 
       - name: Upload .ko artifact
         uses: actions/upload-artifact@v4
